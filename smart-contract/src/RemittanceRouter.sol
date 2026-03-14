@@ -4,14 +4,14 @@ pragma solidity ^0.8.20;
 /**
  * @title RemittanceRouter
  * @notice AI-powered multi-corridor remittance router on Celo
- * @dev Supports USD → NGN, USD → KES, USD → GHS via Mento swaps
+ * @dev Supports USD -> NGN, USD -> KES, USD -> GHS via Mento swaps
  *      The OpenClaw/Claude agent calls sendRemittance() with the
  *      correct corridorId based on natural language intent parsing.
  *
  *  Corridor IDs (registered at deploy time via addCorridor):
- *    0 = USD → NGN (Nigeria)
- *    1 = USD → KES (Kenya)
- *    2 = USD → GHS (Ghana)
+ *    0 = USD -> NGN (Nigeria)
+ *    1 = USD -> KES (Kenya)
+ *    2 = USD -> GHS (Ghana)
  */
 
 interface IERC20 {
@@ -42,23 +42,23 @@ interface IMentoBroker {
 
 contract RemittanceRouter {
 
-    // ─── Types ────────────────────────────────────────────────────────────────
+    // --- Types ----------------------------------------------------------------
 
-    /// @notice A supported remittance corridor e.g. USD → NGN
+    /// @notice A supported remittance corridor e.g. USD -> NGN
     struct Corridor {
         address tokenOut;         // cNGN | cKES | cGHS
         address exchangeProvider; // Mento BiPoolManager for this pair
         bytes32 exchangeId;       // Mento pool ID for cUSD <> tokenOut
-        string  label;            // e.g. "USD → NGN"
-        string  currency;         // e.g. "NGN" — used by agent for display
+        string  label;            // e.g. "USD -> NGN"
+        string  currency;         // e.g. "NGN" - used by agent for display
         bool    active;
     }
 
-    // ─── State ────────────────────────────────────────────────────────────────
+    // --- State ----------------------------------------------------------------
 
     address public owner;
     address public agent;               // OpenClaw agent wallet
-    address public immutable CUSD;      // cUSD — always the input token
+    address public immutable CUSD;      // cUSD - always the input token
     address public immutable MENTO_BROKER;
 
     uint256 public feeBps = 50;         // 0.5% platform fee (50 bps)
@@ -69,7 +69,7 @@ contract RemittanceRouter {
     mapping(uint256 => Corridor) public corridors;
     uint256 public corridorCount;
 
-    // ─── Events ───────────────────────────────────────────────────────────────
+    // --- Events ---------------------------------------------------------------
 
     event RemittanceSent(
         address indexed sender,
@@ -87,7 +87,7 @@ contract RemittanceRouter {
     event AgentUpdated(address oldAgent, address newAgent);
     event FeesWithdrawn(address to, uint256 amount);
 
-    // ─── Errors ───────────────────────────────────────────────────────────────
+    // --- Errors ---------------------------------------------------------------
 
     error NotOwner();
     error NotAgent();
@@ -99,7 +99,7 @@ contract RemittanceRouter {
     error FeeTooHigh();
     error TransferFailed();
 
-    // ─── Modifiers ────────────────────────────────────────────────────────────
+    // --- Modifiers ------------------------------------------------------------
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -111,7 +111,7 @@ contract RemittanceRouter {
         _;
     }
 
-    // ─── Constructor ──────────────────────────────────────────────────────────
+    // --- Constructor ----------------------------------------------------------
 
     /**
      * @param _cusd         cUSD token address (from .env: CUSD_TESTNET / CUSD_MAINNET)
@@ -127,14 +127,14 @@ contract RemittanceRouter {
         MENTO_BROKER = _mentoBroker;
     }
 
-    // ─── Corridor Management ──────────────────────────────────────────────────
+    // --- Corridor Management --------------------------------------------------
 
     /**
-     * @notice Register a corridor — called 3x by the deploy script
+     * @notice Register a corridor - called 3x by the deploy script
      * @param tokenOut         cNGN | cKES | cGHS (from .env: CNGN_*, CKES_*, CGHS_*)
      * @param exchangeProvider Mento BiPoolManager (from .env: MENTO_BIPOOLMANAGER)
-     * @param exchangeId       Pool ID — fetch from Mento SDK before deploying
-     * @param label            Human-readable e.g. "USD → NGN"
+     * @param exchangeId       Pool ID - fetch from Mento SDK before deploying
+     * @param label            Human-readable e.g. "USD -> NGN"
      * @param currency         Currency code e.g. "NGN"
      */
     function addCorridor(
@@ -166,10 +166,10 @@ contract RemittanceRouter {
         emit CorridorToggled(corridorId, active);
     }
 
-    // ─── Quote ────────────────────────────────────────────────────────────────
+    // --- Quote ----------------------------------------------------------------
 
     /**
-     * @notice Preview exchange before sending — agent calls this first
+     * @notice Preview exchange before sending - agent calls this first
      * @param corridorId  0=NGN | 1=KES | 2=GHS
      * @param usdAmount   cUSD input (18 decimals)
      * @return localAmount   Local currency out after fee
@@ -202,15 +202,15 @@ contract RemittanceRouter {
         exchangeRate = (localAmount * 1e18) / swapAmount;
     }
 
-    // ─── Send (Agent-triggered) ───────────────────────────────────────────────
+    // --- Send (Agent-triggered) -----------------------------------------------
 
     /**
-     * @notice Execute remittance — called by OpenClaw agent
+     * @notice Execute remittance - called by OpenClaw agent
      * @param sender      User wallet (must have pre-approved cUSD to this contract)
      * @param recipient   Recipient wallet on Celo
      * @param corridorId  0=NGN | 1=KES | 2=GHS
      * @param usdAmount   cUSD to send (18 decimals)
-     * @param minLocalOut Slippage protection — revert if local received < this
+     * @param minLocalOut Slippage protection - revert if local received < this
      * @param memo        Original user message e.g. "Send $30 to my sister in Lagos"
      */
     function sendRemittance(
@@ -227,7 +227,7 @@ contract RemittanceRouter {
     }
 
     /**
-     * @notice Direct send — user calls themselves, no agent needed
+     * @notice Direct send - user calls themselves, no agent needed
      * @dev Useful for power users or direct dApp integration
      */
     function sendDirect(
@@ -242,7 +242,7 @@ contract RemittanceRouter {
         );
     }
 
-    // ─── Internal ─────────────────────────────────────────────────────────────
+    // --- Internal -------------------------------------------------------------
 
     function _executeSwap(
         address sender,
@@ -268,7 +268,7 @@ contract RemittanceRouter {
         uint256 swapAmount = usdAmount - fee;
         accruedFees += fee;
 
-        // 3. Approve Mento and execute swap cUSD → local stablecoin
+        // 3. Approve Mento and execute swap cUSD -> local stablecoin
         IERC20(CUSD).approve(MENTO_BROKER, swapAmount);
         localReceived = IMentoBroker(MENTO_BROKER).swapIn(
             c.exchangeProvider,
@@ -289,7 +289,7 @@ contract RemittanceRouter {
         emit RemittanceSent(sender, recipient, corridorId, usdAmount, localReceived, fee, memo);
     }
 
-    // ─── Admin ────────────────────────────────────────────────────────────────
+    // --- Admin ----------------------------------------------------------------
 
     function setFee(uint256 newFeeBps) external onlyOwner {
         if (newFeeBps > MAX_FEE_BPS) revert FeeTooHigh();
@@ -311,9 +311,9 @@ contract RemittanceRouter {
         emit FeesWithdrawn(to, amount);
     }
 
-    // ─── Views ────────────────────────────────────────────────────────────────
+    // --- Views ----------------------------------------------------------------
 
-    /// @notice Returns corridor info — agent calls this to build its routing table
+    /// @notice Returns corridor info - agent calls this to build its routing table
     function getCorridor(uint256 corridorId)
         external
         view

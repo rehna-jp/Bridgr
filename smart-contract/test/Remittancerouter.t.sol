@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/RemittanceRouter.sol";
 
-// ─── Mocks ────────────────────────────────────────────────────────────────────
+// -- Mocks ---------------------------------------------------------------------
 
 contract MockERC20 {
     mapping(address => uint256) public balanceOf;
@@ -40,170 +40,353 @@ contract MockERC20 {
 }
 
 contract MockMentoBroker {
-    MockERC20 public cNGN;
-    uint256 public rate = 1540e18; // 1 cUSD = 1540 cNGN
+    // rates per corridor: corridorId => rate (local per 1e18 cUSD)
+    mapping(uint256 => uint256) public rates;
 
-    constructor(address _cngn) {
-        cNGN = MockERC20(_cngn);
+    // token registry: tokenOut address => MockERC20
+    mapping(address => MockERC20) public tokens;
+
+    function setRate(address tokenOut, uint256 rate) external {
+        rates[uint256(uint160(tokenOut))] = rate;
     }
 
-    function setRate(uint256 _rate) external { rate = _rate; }
+    function registerToken(address tokenOut) external {
+        tokens[tokenOut] = MockERC20(tokenOut);
+    }
 
     function getAmountOut(
-        address, bytes32, address, address, uint256 amountIn
+        address,        // exchangeProvider (unused in mock)
+        bytes32,        // exchangeId (unused in mock)
+        address,        // tokenIn
+        address tokenOut,
+        uint256 amountIn
     ) external view returns (uint256) {
+        uint256 rate = rates[uint256(uint160(tokenOut))];
+        if (rate == 0) rate = 1540e18; // default 1540:1
         return (amountIn * rate) / 1e18;
     }
 
     function swapIn(
-        address, bytes32, address tokenIn, address, uint256 amountIn, uint256 amountOutMin
+        address,
+        bytes32,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 amountOutMin
     ) external returns (uint256 amountOut) {
-        // Pull tokenIn (simulates broker pulling cUSD)
+        // Pull tokenIn from caller
         MockERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+
+        uint256 rate = rates[uint256(uint160(tokenOut))];
+        if (rate == 0) rate = 1540e18;
         amountOut = (amountIn * rate) / 1e18;
+
         require(amountOut >= amountOutMin, "slippage");
-        cNGN.mint(msg.sender, amountOut);
+
+        // Mint tokenOut to caller
+        MockERC20(tokenOut).mint(msg.sender, amountOut);
     }
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// -- Tests ---------------------------------------------------------------------
 
 contract RemittanceRouterTest is Test {
 
     RemittanceRouter router;
-    MockERC20        cusd;
-    MockERC20        cngn;
     MockMentoBroker  broker;
 
+    // Tokens
+    MockERC20 cusd;
+    MockERC20 cNGN;
+    MockERC20 cKES;
+    MockERC20 cGHS;
+
+    // Actors
     address owner     = address(this);
     address agent     = makeAddr("agent");
     address sender    = makeAddr("sender");
     address recipient = makeAddr("recipient");
 
+    // Corridor IDs
+    uint256 constant NGN = 0;
+    uint256 constant KES = 1;
+    uint256 constant GHS = 2;
+
     uint256 constant ONE_USD = 1e18;
 
-    function setUp() public {
-        cusd   = new MockERC20("cUSD");
-        cngn   = new MockERC20("cNGN");
-        broker = new MockMentoBroker(address(cngn));
+    // Exchange provider (mock address - unused by mock broker)
+    address constant EXCHANGE_PROVIDER = address(0xBEEF);
 
-        // Deploy router — we patch token addresses via vm.etch trick
-        // For unit tests we deploy a testable version with configurable tokens
+    function setUp() public {
+        // Deploy mock tokens
+        cusd = new MockERC20("cUSD");
+        cNGN = new MockERC20("cNGN");
+        cKES = new MockERC20("cKES");
+        cGHS = new MockERC20("cGHS");
+
+        // Deploy mock broker
+        broker = new MockMentoBroker();
+
+        // Set rates: NGN=1540, KES=130, GHS=12
+        broker.setRate(address(cNGN), 1540e18);
+        broker.setRate(address(cKES), 130e18);
+        broker.setRate(address(cGHS), 12e18);
+
+        // Deploy router with new 3-param constructor
         router = new RemittanceRouter(
+            address(cusd),
             address(broker),
-            address(0x1), // exchange provider (unused in mock)
-            bytes32(0),   // exchange id (unused in mock)
             agent
         );
 
-        // Patch hardcoded token addresses in contract bytecode
-        vm.etch(router.CUSD(), address(cusd).code);
-        vm.etch(router.CNGN(), address(cngn).code);
+        // Register 3 corridors
+        router.addCorridor(address(cNGN), EXCHANGE_PROVIDER, bytes32(0), "USD -> NGN", "NGN");
+        router.addCorridor(address(cKES), EXCHANGE_PROVIDER, bytes32(0), "USD -> KES", "KES");
+        router.addCorridor(address(cGHS), EXCHANGE_PROVIDER, bytes32(0), "USD -> GHS", "GHS");
 
         // Fund sender with 1000 cUSD
         cusd.mint(sender, 1000 * ONE_USD);
     }
 
-    // ── Quote Tests ───────────────────────────────────────────────────────────
+    // -- Constructor Tests -----------------------------------------------------
 
-    function test_getQuote_basicAmount() public {
-        uint256 usdAmount = 30 * ONE_USD;
-        (uint256 ngnAmount, uint256 fee, uint256 rate) = router.getQuote(usdAmount);
-
-        uint256 expectedFee = (usdAmount * 50) / 10_000; // 0.5%
-        assertEq(fee, expectedFee, "fee mismatch");
-        assertGt(ngnAmount, 0, "ngn should be > 0");
-        assertGt(rate, 0, "rate should be > 0");
+    function test_constructor_setsState() public view {
+        assertEq(router.owner(), owner);
+        assertEq(router.agent(), agent);
+        assertEq(router.CUSD(), address(cusd));
+        assertEq(router.MENTO_BROKER(), address(broker));
+        assertEq(router.feeBps(), 50);
+        assertEq(router.corridorCount(), 3);
     }
 
-    function test_getQuote_revertsOnZero() public {
-        vm.expectRevert(RemittanceRouter.ZeroAmount.selector);
-        router.getQuote(0);
+    function test_constructor_revertsZeroAddress() public {
+        vm.expectRevert(RemittanceRouter.ZeroAddress.selector);
+        new RemittanceRouter(address(0), address(broker), agent);
+
+        vm.expectRevert(RemittanceRouter.ZeroAddress.selector);
+        new RemittanceRouter(address(cusd), address(0), agent);
+
+        vm.expectRevert(RemittanceRouter.ZeroAddress.selector);
+        new RemittanceRouter(address(cusd), address(broker), address(0));
     }
 
-    // ── sendRemittance Tests ──────────────────────────────────────────────────
+    // -- Corridor Tests --------------------------------------------------------
 
-    function test_sendRemittance_success() public {
-        uint256 usdAmount = 30 * ONE_USD;
-        (uint256 expectedNgn, , ) = router.getQuote(usdAmount);
-        uint256 minNgn = (expectedNgn * 99) / 100; // 1% slippage tolerance
+    function test_addCorridor_success() public view {
+        (address tokenOut, string memory label, string memory currency, bool active) =
+            router.getCorridor(NGN);
 
-        // Sender approves router
+        assertEq(tokenOut, address(cNGN));
+        assertEq(label, "USD -> NGN");
+        assertEq(currency, "NGN");
+        assertTrue(active);
+    }
+
+    function test_addCorridor_allThreeRegistered() public view {
+        assertEq(router.corridorCount(), 3);
+        (address ngnToken,,,) = router.getCorridor(NGN);
+        (address kesToken,,,) = router.getCorridor(KES);
+        (address ghsToken,,,) = router.getCorridor(GHS);
+        assertEq(ngnToken, address(cNGN));
+        assertEq(kesToken, address(cKES));
+        assertEq(ghsToken, address(cGHS));
+    }
+
+    function test_toggleCorridor_pausesAndUnpauses() public {
+        router.toggleCorridor(NGN, false);
+        (,,, bool active) = router.getCorridor(NGN);
+        assertFalse(active);
+
+        router.toggleCorridor(NGN, true);
+        (,,, active) = router.getCorridor(NGN);
+        assertTrue(active);
+    }
+
+    function test_toggleCorridor_invalidId() public {
+        vm.expectRevert(abi.encodeWithSelector(RemittanceRouter.InvalidCorridor.selector, 99));
+        router.toggleCorridor(99, false);
+    }
+
+    function test_sendRemittance_revertsWhenCorridorInactive() public {
+        router.toggleCorridor(NGN, false);
+
         vm.prank(sender);
-        MockERC20(router.CUSD()).approve(address(router), usdAmount);
+        cusd.approve(address(router), 30 * ONE_USD);
 
-        // Agent triggers transfer
         vm.prank(agent);
-        uint256 ngnReceived = router.sendRemittance(
-            sender, recipient, usdAmount, minNgn, "Send $30 to sister in Lagos"
+        vm.expectRevert(abi.encodeWithSelector(RemittanceRouter.CorridorInactive.selector, NGN));
+        router.sendRemittance(sender, recipient, NGN, 30 * ONE_USD, 0, "test");
+    }
+
+    // -- Quote Tests -----------------------------------------------------------
+
+    function test_getQuote_NGN() public view {
+        (uint256 local, uint256 fee, uint256 rate) = router.getQuote(NGN, 30 * ONE_USD);
+        uint256 expectedFee = (30 * ONE_USD * 50) / 10_000;
+        assertEq(fee, expectedFee);
+        assertGt(local, 0);
+        assertGt(rate, 0);
+    }
+
+    function test_getQuote_KES() public view {
+        (uint256 local, uint256 fee,) = router.getQuote(KES, 30 * ONE_USD);
+        assertGt(local, 0);
+        assertGt(fee, 0);
+    }
+
+    function test_getQuote_GHS() public view {
+        (uint256 local, uint256 fee,) = router.getQuote(GHS, 30 * ONE_USD);
+        assertGt(local, 0);
+        assertGt(fee, 0);
+    }
+
+    function test_getQuote_revertsZeroAmount() public {
+        vm.expectRevert(RemittanceRouter.ZeroAmount.selector);
+        router.getQuote(NGN, 0);
+    }
+
+    function test_getQuote_revertsInvalidCorridor() public {
+        vm.expectRevert(abi.encodeWithSelector(RemittanceRouter.InvalidCorridor.selector, 99));
+        router.getQuote(99, 30 * ONE_USD);
+    }
+
+    // -- sendRemittance Tests --------------------------------------------------
+
+    function test_sendRemittance_NGN_success() public {
+        uint256 usdAmount = 30 * ONE_USD;
+        (uint256 expectedLocal,,) = router.getQuote(NGN, usdAmount);
+        uint256 minLocal = (expectedLocal * 99) / 100;
+
+        vm.prank(sender);
+        cusd.approve(address(router), usdAmount);
+
+        vm.prank(agent);
+        uint256 received = router.sendRemittance(
+            sender, recipient, NGN, usdAmount, minLocal, "Send $30 to sister in Lagos"
         );
 
-        assertGe(ngnReceived, minNgn, "received less than min");
-        assertGt(MockERC20(router.CNGN()).balanceOf(recipient), 0, "recipient got nothing");
-        assertGt(router.accruedFees(), 0, "no fees accrued");
+        assertGe(received, minLocal);
+        assertGt(cNGN.balanceOf(recipient), 0);
+        assertGt(router.accruedFees(), 0);
+    }
+
+    function test_sendRemittance_KES_success() public {
+        uint256 usdAmount = 50 * ONE_USD;
+        (uint256 expectedLocal,,) = router.getQuote(KES, usdAmount);
+
+        vm.prank(sender);
+        cusd.approve(address(router), usdAmount);
+
+        vm.prank(agent);
+        uint256 received = router.sendRemittance(
+            sender, recipient, KES, usdAmount, (expectedLocal * 99) / 100, "Send to Nairobi"
+        );
+
+        assertGt(received, 0);
+        assertGt(cKES.balanceOf(recipient), 0);
+    }
+
+    function test_sendRemittance_GHS_success() public {
+        uint256 usdAmount = 20 * ONE_USD;
+        (uint256 expectedLocal,,) = router.getQuote(GHS, usdAmount);
+
+        vm.prank(sender);
+        cusd.approve(address(router), usdAmount);
+
+        vm.prank(agent);
+        uint256 received = router.sendRemittance(
+            sender, recipient, GHS, usdAmount, (expectedLocal * 99) / 100, "Send to Accra"
+        );
+
+        assertGt(received, 0);
+        assertGt(cGHS.balanceOf(recipient), 0);
     }
 
     function test_sendRemittance_onlyAgent() public {
         vm.prank(sender);
-        MockERC20(router.CUSD()).approve(address(router), 30 * ONE_USD);
+        cusd.approve(address(router), 30 * ONE_USD);
 
-        vm.prank(makeAddr("random")); // not the agent
+        vm.prank(makeAddr("attacker"));
         vm.expectRevert(RemittanceRouter.NotAgent.selector);
-        router.sendRemittance(sender, recipient, 30 * ONE_USD, 0, "hack attempt");
+        router.sendRemittance(sender, recipient, NGN, 30 * ONE_USD, 0, "hack");
     }
 
     function test_sendRemittance_zeroAmount() public {
         vm.prank(agent);
         vm.expectRevert(RemittanceRouter.ZeroAmount.selector);
-        router.sendRemittance(sender, recipient, 0, 0, "nothing");
+        router.sendRemittance(sender, recipient, NGN, 0, 0, "nothing");
     }
 
     function test_sendRemittance_zeroRecipient() public {
         vm.prank(sender);
-        MockERC20(router.CUSD()).approve(address(router), 30 * ONE_USD);
+        cusd.approve(address(router), 30 * ONE_USD);
 
         vm.prank(agent);
         vm.expectRevert(RemittanceRouter.ZeroAddress.selector);
-        router.sendRemittance(sender, address(0), 30 * ONE_USD, 0, "to nobody");
+        router.sendRemittance(sender, address(0), NGN, 30 * ONE_USD, 0, "to nobody");
+    }
+
+    function test_sendRemittance_invalidCorridor() public {
+        vm.prank(sender);
+        cusd.approve(address(router), 30 * ONE_USD);
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(RemittanceRouter.InvalidCorridor.selector, 99));
+        router.sendRemittance(sender, recipient, 99, 30 * ONE_USD, 0, "bad corridor");
     }
 
     function test_sendRemittance_emitsEvent() public {
         uint256 usdAmount = 10 * ONE_USD;
         vm.prank(sender);
-        MockERC20(router.CUSD()).approve(address(router), usdAmount);
+        cusd.approve(address(router), usdAmount);
 
-        vm.expectEmit(true, true, false, false);
-        emit RemittanceRouter.RemittanceSent(sender, recipient, usdAmount, 0, 0, "test memo");
+        vm.expectEmit(true, true, true, false);
+        emit RemittanceRouter.RemittanceSent(sender, recipient, NGN, usdAmount, 0, 0, "test");
 
         vm.prank(agent);
-        router.sendRemittance(sender, recipient, usdAmount, 0, "test memo");
+        router.sendRemittance(sender, recipient, NGN, usdAmount, 0, "test");
     }
 
-    // ── sendDirect Tests ──────────────────────────────────────────────────────
+    function test_sendRemittance_feeAccrues() public {
+        uint256 usdAmount = 100 * ONE_USD;
+        uint256 expectedFee = (usdAmount * 50) / 10_000; // 0.5%
+
+        vm.prank(sender);
+        cusd.approve(address(router), usdAmount);
+
+        vm.prank(agent);
+        router.sendRemittance(sender, recipient, NGN, usdAmount, 0, "fee test");
+
+        assertEq(router.accruedFees(), expectedFee);
+    }
+
+    // -- sendDirect Tests ------------------------------------------------------
 
     function test_sendDirect_success() public {
         uint256 usdAmount = 50 * ONE_USD;
-        (uint256 expectedNgn, , ) = router.getQuote(usdAmount);
+        (uint256 expectedLocal,,) = router.getQuote(NGN, usdAmount);
 
         vm.startPrank(sender);
-        MockERC20(router.CUSD()).approve(address(router), usdAmount);
-        uint256 received = router.sendDirect(recipient, usdAmount, (expectedNgn * 99) / 100, "direct send");
+        cusd.approve(address(router), usdAmount);
+        uint256 received = router.sendDirect(
+            recipient, NGN, usdAmount, (expectedLocal * 99) / 100, "direct send"
+        );
         vm.stopPrank();
 
         assertGt(received, 0);
-        assertGt(MockERC20(router.CNGN()).balanceOf(recipient), 0);
+        assertGt(cNGN.balanceOf(recipient), 0);
     }
 
-    // ── Admin Tests ───────────────────────────────────────────────────────────
+    // -- Admin Tests -----------------------------------------------------------
 
     function test_setFee_success() public {
-        router.setFee(100); // 1%
+        router.setFee(100);
         assertEq(router.feeBps(), 100);
     }
 
     function test_setFee_tooHigh() public {
         vm.expectRevert(RemittanceRouter.FeeTooHigh.selector);
-        router.setFee(201); // over 2% cap
+        router.setFee(201);
     }
 
     function test_setFee_onlyOwner() public {
@@ -218,13 +401,17 @@ contract RemittanceRouterTest is Test {
         assertEq(router.agent(), newAgent);
     }
 
+    function test_setAgent_zeroAddress() public {
+        vm.expectRevert(RemittanceRouter.ZeroAddress.selector);
+        router.setAgent(address(0));
+    }
+
     function test_withdrawFees() public {
-        // First accrue some fees
         uint256 usdAmount = 100 * ONE_USD;
         vm.prank(sender);
-        MockERC20(router.CUSD()).approve(address(router), usdAmount);
+        cusd.approve(address(router), usdAmount);
         vm.prank(agent);
-        router.sendRemittance(sender, recipient, usdAmount, 0, "big send");
+        router.sendRemittance(sender, recipient, NGN, usdAmount, 0, "accrue fees");
 
         uint256 fees = router.accruedFees();
         assertGt(fees, 0);
@@ -233,20 +420,39 @@ contract RemittanceRouterTest is Test {
         router.withdrawFees(treasury);
 
         assertEq(router.accruedFees(), 0);
-        assertEq(MockERC20(router.CUSD()).balanceOf(treasury), fees);
+        assertEq(cusd.balanceOf(treasury), fees);
     }
 
-    // ── Fuzz Tests ────────────────────────────────────────────────────────────
+    function test_withdrawFees_onlyOwner() public {
+        vm.prank(makeAddr("attacker"));
+        vm.expectRevert(RemittanceRouter.NotOwner.selector);
+        router.withdrawFees(makeAddr("treasury"));
+    }
+
+    // -- Fuzz Tests ------------------------------------------------------------
 
     function testFuzz_sendRemittance_anyAmount(uint256 amount) public {
         amount = bound(amount, 1 * ONE_USD, 500 * ONE_USD);
-
         cusd.mint(sender, amount);
+
         vm.prank(sender);
-        MockERC20(router.CUSD()).approve(address(router), amount);
+        cusd.approve(address(router), amount);
 
         vm.prank(agent);
-        uint256 received = router.sendRemittance(sender, recipient, amount, 0, "fuzz test");
+        uint256 received = router.sendRemittance(sender, recipient, NGN, amount, 0, "fuzz");
+        assertGt(received, 0);
+    }
+
+    function testFuzz_sendRemittance_allCorridors(uint256 corridorId, uint256 amount) public {
+        corridorId = bound(corridorId, 0, 2); // valid corridors only
+        amount = bound(amount, 1 * ONE_USD, 100 * ONE_USD);
+        cusd.mint(sender, amount);
+
+        vm.prank(sender);
+        cusd.approve(address(router), amount);
+
+        vm.prank(agent);
+        uint256 received = router.sendRemittance(sender, recipient, corridorId, amount, 0, "fuzz all");
         assertGt(received, 0);
     }
 }

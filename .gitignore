@@ -1,0 +1,24 @@
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Smart contract
+smart-contract/out/
+smart-contract/cache/
+smart-contract/broadcast/*/dry-run/
+
+# Node
+node_modules/
+agent/skills/node_modules/
+
+# Foundry
+smart-contract/lib/
+
+# OpenClaw
+.openclaw/
+
+# Misc
+.DS_Store
+*.log

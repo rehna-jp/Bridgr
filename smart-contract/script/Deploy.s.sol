@@ -25,7 +25,7 @@ import "../src/RemittanceRouter.sol";
  */
 contract DeployRemittanceRouter is Script {
 
-    // ── Exchange IDs ─────────────────────────────────────────────────────────
+    // -- Exchange IDs ---------------------------------------------------------
     // Formula: keccak256(abi.encodePacked(symbol0, symbol1, pricingModuleName))
     // All Oya Send corridors use ConstantSum pricing (stablecoin pairs)
     // Verified via: forge script script/GetExchangeIds.s.sol --rpc-url $RPC -vvvv
@@ -56,7 +56,7 @@ contract DeployRemittanceRouter is Script {
             agentAddress
         );
 
-        // 2. Register corridors — ORDER MATTERS
+        // 2. Register corridors - ORDER MATTERS
         //    Agent uses these IDs: 0=NGN, 1=KES, 2=GHS
         router.addCorridor(cNGN, biPoolManager, NGN_EXCHANGE_ID, "USD -> NGN", "NGN");
         router.addCorridor(cKES, biPoolManager, KES_EXCHANGE_ID, "USD -> KES", "KES");
@@ -66,7 +66,7 @@ contract DeployRemittanceRouter is Script {
 
         // 3. Print deployment summary
         console.log("=================================================");
-        console.log("  OYA SEND — Deployment Complete");
+        console.log("  RemittanceRouter - Deployment Complete");
         console.log("=================================================");
         console.log("Contract:  ", address(router));
         console.log("Owner:     ", router.owner());

@@ -18,7 +18,7 @@ import "forge-std/Script.sol";
  *     --rpc-url $CELO_SEPOLIA_RPC \
  *     -vvvv
  *
- * No --broadcast needed — this is read-only.
+ * No --broadcast needed - this is read-only.
  * Copy the output bytes32 values into Deploy.s.sol
  */
 
@@ -40,13 +40,13 @@ interface IERC20Symbol {
 
 contract GetExchangeIds is Script {
 
-    // ── Addresses from .env ───────────────────────────────────────────────────
-    // These match your .env TESTNET values — swap for mainnet when ready
+    // -- Addresses from .env ---------------------------------------------------
+    // These match your .env TESTNET values - swap for mainnet when ready
 
     address constant BROKER   = 0x777A8255cA72412f0d706dc03C9D1987306B4CaD; // Mento Broker mainnet
     // For Sepolia testnet broker, update from: https://docs.mento.org/mento/build-on-mento/deployments/addresses
 
-    // Token addresses (mainnet — swap for testnet vars if needed)
+    // Token addresses (mainnet - swap for testnet vars if needed)
     address constant CUSD     = 0x765DE816845861e75A25fCA122bb6898B8B1282a;
     address constant CNGN     = 0x17700282592D6917F6A73D0bF8AcCf4D578c131e;
     address constant CKES     = 0x456a3D042C0DbD3db53D5489e98dFb038553B0d0;
@@ -54,10 +54,10 @@ contract GetExchangeIds is Script {
 
     function run() external view {
         console.log("=================================================");
-        console.log("  OYA SEND — Mento Exchange ID Finder");
+        console.log("  RemittanceRouter - Mento Exchange ID Finder");
         console.log("=================================================");
 
-        // ── Method 1: Compute deterministically ──────────────────────────────
+        // -- Method 1: Compute deterministically ------------------------------
         // The formula from Mento docs (works offline, no RPC needed):
         //   keccak256(abi.encodePacked(symbol0, symbol1, pricingModuleName))
         //
@@ -75,7 +75,7 @@ contract GetExchangeIds is Script {
         console.log("  GHS_EXCHANGE_ID (cUSD/cGHS ConstantSum):");
         console.logBytes32(GHS_ID_COMPUTED);
 
-        // ── Method 2: Live on-chain verification ─────────────────────────────
+        // -- Method 2: Live on-chain verification -----------------------------
         // Queries the live Mento Broker to confirm computed IDs match
         // (requires --rpc-url to be set)
 
@@ -134,9 +134,9 @@ contract GetExchangeIds is Script {
             }
         }
 
-        // ── Summary ───────────────────────────────────────────────────────────
+        // -- Summary -----------------------------------------------------------
         console.log("\n=================================================");
-        console.log("  SUMMARY — Copy these into Deploy.s.sol");
+        console.log("  SUMMARY - Copy these into Deploy.s.sol");
         console.log("=================================================");
         console.log("\nbytes32 NGN_EXCHANGE_ID =");
         console.logBytes32(NGN_ID_COMPUTED);
@@ -151,7 +151,7 @@ contract GetExchangeIds is Script {
         if (!ngnFound || !kesFound || !ghsFound) {
             console.log("\n  WARNING: Some pools not found on this network.");
             console.log("  Check that you are using the correct RPC (mainnet vs testnet).");
-            console.log("  Testnet may not have all pairs — mainnet should have all 3.");
+            console.log("  Testnet may not have all pairs - mainnet should have all 3.");
         }
 
         console.log("=================================================");
